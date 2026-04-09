@@ -18,6 +18,36 @@ const auth = getAuth(app);
 const db = getFirestore(app);
 const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
 
+// --- 自動調整高度的專用文字框 (新增說明欄位使用) ---
+const AutoResizeTextarea = ({ value, onChange, placeholder = "", isEditing }) => {
+  const textareaRef = React.useRef(null);
+  React.useEffect(() => {
+    if (textareaRef.current && isEditing) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
+    }
+  }, [value, isEditing]);
+
+  return (
+    <div className="flex flex-col w-full">
+      {!isEditing ? (
+        <div className="px-4 py-3 text-sm font-semibold text-slate-700 bg-slate-50/50 rounded-xl border border-slate-100 min-h-[80px] whitespace-pre-wrap break-words">
+          {value || '-'}
+        </div>
+      ) : (
+        <textarea
+          ref={textareaRef}
+          value={value || ""}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          rows={3}
+          className="px-4 py-3 text-sm font-semibold text-slate-800 bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder-slate-300 w-full resize-none overflow-hidden"
+        />
+      )}
+    </div>
+  );
+};
+
 // --- 獨立的 UI 元件 ---
 const SoftCard = ({ children, className = "" }) => (
   <div className={`bg-white rounded-2xl shadow-sm border border-slate-100 p-6 transition-all duration-300 ${className}`}>
@@ -99,7 +129,7 @@ const formatCurrency = (val) => {
 
 // --- 金額專用輸入框 ---
 const CurrencyInputField = ({ label, value, onChange, placeholder = "", className = "", isEditing, textClass = "text-slate-800" }) => {
-  const [isFocused, setIsFocused] = React.useState(false);
+  const [isFocused, ReactSetIsFocused] = React.useState(false);
 
   const displayValue = (isEditing && isFocused)
     ? (value ? value.toString().replace(/,/g, '') : '')
@@ -123,8 +153,8 @@ const CurrencyInputField = ({ label, value, onChange, placeholder = "", classNam
           inputMode="numeric"
           value={displayValue}
           onChange={handleChange}
-          onFocus={() => setIsFocused(true)}
-          onBlur={() => setIsFocused(false)}
+          onFocus={() => ReactSetIsFocused(true)}
+          onBlur={() => ReactSetIsFocused(false)}
           placeholder={placeholder}
           className={`px-4 py-3 text-sm font-bold bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder-slate-300 w-full ${isFocused ? 'text-slate-800' : textClass}`}
         />
@@ -234,7 +264,12 @@ export default function App() {
     const initAuth = async () => {
       try {
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-          await signInWithCustomToken(auth, __initial_auth_token);
+          try {
+            await signInWithCustomToken(auth, __initial_auth_token);
+          } catch (tokenError) {
+            console.warn("Token mismatch (可能使用了自訂的 Firebase 設定)，已切換為匿名登入：", tokenError);
+            await signInAnonymously(auth);
+          }
         } else {
           await signInAnonymously(auth);
         }
@@ -279,6 +314,7 @@ export default function App() {
     taxId: "",
     amountIncTax: "",
     amountExcTax: "",
+    description: "", // 新增：說明欄位
     createdAt: Date.now(),
     rounds: [
       {
@@ -292,7 +328,7 @@ export default function App() {
       inProgress: {
         record: false, announce: false, contract: false, stampTax: false,
         depositRet: false, guarantee: false, sapForm: false, insurance: false,
-        reqNum: "", sapNum: "", startDate: "", deliveryDate: "",
+        reqNum: "", sapNum: "", startDate: "", deliveryDate: "", completionRate: "", // 新增：完成度
         reviewRounds: [{ id: 1, submitDate: "", passDate: "", note: "", isPassed: false }]
       },
       postCompletion: { completionDate: "", delayDays: "", readyForAcceptance: false },
@@ -350,7 +386,8 @@ export default function App() {
   const handleFieldChange = (section, field, value, roundIndex = null, subSection = null) => {
     if (!localProject || !isEditing) return;
     const newProject = JSON.parse(JSON.stringify(localProject));
-    if (['title', 'awardDate', 'assignee', 'contractor', 'taxId', 'amountIncTax', 'amountExcTax'].includes(section)) {
+    // 新增：包含 description
+    if (['title', 'awardDate', 'assignee', 'contractor', 'taxId', 'amountIncTax', 'amountExcTax', 'description'].includes(section)) {
       newProject[section] = value;
     } else if (section === 'rounds' && roundIndex !== null && subSection) {
       newProject.rounds[roundIndex][subSection][field] = value;
@@ -372,6 +409,15 @@ export default function App() {
     setLocalProject(newProject);
   };
 
+  // 新增：刪除招標/開標回合
+  const removeRound = (index) => {
+    if (!localProject || !isEditing) return;
+    const newProject = JSON.parse(JSON.stringify(localProject));
+    newProject.rounds.splice(index, 1);
+    newProject.rounds.forEach((r, i) => r.id = i + 1); // 重新編號
+    setLocalProject(newProject);
+  };
+
   const addReviewRound = () => {
     if (!localProject || !isEditing) return;
     const newProject = JSON.parse(JSON.stringify(localProject));
@@ -380,6 +426,15 @@ export default function App() {
     }
     const nextId = newProject.performance.inProgress.reviewRounds.length + 1;
     newProject.performance.inProgress.reviewRounds.push({ id: nextId, submitDate: "", passDate: "", note: "", isPassed: false });
+    setLocalProject(newProject);
+  };
+
+  // 新增：刪除送審回合
+  const removeReviewRound = (index) => {
+    if (!localProject || !isEditing) return;
+    const newProject = JSON.parse(JSON.stringify(localProject));
+    newProject.performance.inProgress.reviewRounds.splice(index, 1);
+    newProject.performance.inProgress.reviewRounds.forEach((r, i) => r.id = i + 1); // 重新編號
     setLocalProject(newProject);
   };
 
@@ -513,11 +568,12 @@ export default function App() {
                       <div className="space-y-4">
                         <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">專案基本資料</p>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 p-6 bg-slate-50 border border-slate-100 rounded-2xl">
-                          <div className="lg:col-span-2">
-                            <InputField isEditing={isEditing} multiline label="承攬廠商" value={localProject.contractor} onChange={(v) => handleFieldChange('contractor', null, v)} placeholder="輸入完整廠商名稱..." />
-                          </div>
+                          {/* 調整：承辦人和承攬廠商位置對調 */}
                           <div className="lg:col-span-1">
                             <InputField isEditing={isEditing} label="承辦人" value={localProject.assignee} onChange={(v) => handleFieldChange('assignee', null, v)} placeholder="輸入姓名..." />
+                          </div>
+                          <div className="lg:col-span-2">
+                            <InputField isEditing={isEditing} multiline label="承攬廠商" value={localProject.contractor} onChange={(v) => handleFieldChange('contractor', null, v)} placeholder="輸入完整廠商名稱..." />
                           </div>
                           <div className="lg:col-span-1">
                             <InputField isEditing={isEditing} label="統一編號" value={localProject.taxId} onChange={(v) => handleFieldChange('taxId', null, v)} placeholder="例如：12345678" />
@@ -532,7 +588,27 @@ export default function App() {
                       </div>
                       <div className="space-y-4">
                         <p className="text-[11px] font-black text-slate-400 uppercase tracking-widest ml-1">進度節點</p>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 p-6 bg-slate-50 border border-slate-100 rounded-2xl">
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6 p-6 bg-slate-50 border border-slate-100 rounded-2xl">
+                          {/* 調整：完成度(%) 顯示於數字後方 */}
+                          <div className="flex flex-col space-y-2">
+                            <label className="text-xs font-bold text-slate-500 ml-1 tracking-wide">完成度</label>
+                            {!isEditing ? (
+                              <div className="px-4 py-3 text-sm font-semibold text-slate-700 bg-slate-50/50 rounded-xl border border-slate-100 min-h-[46px] flex items-center break-words">
+                                {localProject.performance.inProgress?.completionRate ? `${localProject.performance.inProgress.completionRate} %` : '-'}
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  value={localProject.performance.inProgress?.completionRate || ""}
+                                  onChange={(e) => handleFieldChange('performance', 'completionRate', e.target.value, null, 'inProgress')}
+                                  placeholder="0"
+                                  className="px-4 py-3 text-sm font-semibold text-slate-800 bg-white border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500 transition-all placeholder-slate-300 w-full"
+                                />
+                                <span className="text-slate-500 font-bold text-sm">%</span>
+                              </div>
+                            )}
+                          </div>
                           <InputField isEditing={false} label="交貨日期" value={localProject.performance.inProgress?.deliveryDate} />
                           <InputField isEditing={false} label="開工日期" value={localProject.performance.inProgress?.startDate} />
                           <InputField isEditing={false} label="完工日期" value={localProject.performance.postCompletion?.completionDate} />
@@ -563,6 +639,20 @@ export default function App() {
                         )}
                       </div>
                     </SoftCard>
+
+                    {/* 新增：說明 區塊 */}
+                    <SoftCard className="bg-white">
+                      <div className="flex items-center justify-between mb-4">
+                         <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">說明</p>
+                         <FileText className="w-4 h-4 text-slate-300" />
+                      </div>
+                      <AutoResizeTextarea
+                        isEditing={isEditing}
+                        value={localProject.description}
+                        onChange={(v) => handleFieldChange('description', null, v)}
+                        placeholder="請在此輸入專案相關說明或報告內容，欄位會隨著您的字數自動向下延展..."
+                      />
+                    </SoftCard>
                   </div>
                 )}
 
@@ -570,16 +660,36 @@ export default function App() {
                   <div className="space-y-8">
                     {localProject.rounds.map((round, idx) => (
                       <SoftCard key={idx}>
-                        <h3 className="text-lg font-black text-slate-800 mb-8 px-2 flex items-center gap-3">
-                          <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 text-xs">{round.id}</div>
-                          第 {round.id} 次招標
-                        </h3>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-                          <CheckboxItem isEditing={isEditing} label="請購單" checked={round.tendering.reqForm} onChange={() => handleFieldChange('rounds', 'reqForm', !round.tendering.reqForm, idx, 'tendering')} />
-                          <CheckboxItem isEditing={isEditing} label="簽文" checked={round.tendering.signDoc} onChange={() => handleFieldChange('rounds', 'signDoc', !round.tendering.signDoc, idx, 'tendering')} />
-                          <CheckboxItem isEditing={isEditing} label="上網公告稿" checked={round.tendering.draftAnnounce} onChange={() => handleFieldChange('rounds', 'draftAnnounce', !round.tendering.draftAnnounce, idx, 'tendering')} />
-                          <CheckboxItem isEditing={isEditing} label="招標文件" checked={round.tendering.tenderDoc} onChange={() => handleFieldChange('rounds', 'tenderDoc', !round.tendering.tenderDoc, idx, 'tendering')} />
+                        <div className="flex justify-between items-center mb-8 px-2">
+                          <h3 className="text-lg font-black text-slate-800 flex items-center gap-3">
+                            <div className="w-8 h-8 rounded-full bg-blue-100 flex items-center justify-center text-blue-600 text-xs">{round.id}</div>
+                            第 {round.id} 次招標
+                          </h3>
+                          {/* 新增：招標回合刪除選項 (第2次含以後) */}
+                          {isEditing && idx > 0 && (
+                            <button onClick={() => removeRound(idx)} className="text-rose-500 hover:text-rose-600 bg-rose-50 hover:bg-rose-100 px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-1 transition-all">
+                              <Trash2 className="w-4 h-4" /> 刪除
+                            </button>
+                          )}
                         </div>
+                        
+                        {/* 條件渲染：第2次(含)以後只要上網公告稿 */}
+                        {idx === 0 ? (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                            <CheckboxItem isEditing={isEditing} label="請購單" checked={round.tendering.reqForm} onChange={() => handleFieldChange('rounds', 'reqForm', !round.tendering.reqForm, idx, 'tendering')} />
+                            <CheckboxItem isEditing={isEditing} label="簽文" checked={round.tendering.signDoc} onChange={() => handleFieldChange('rounds', 'signDoc', !round.tendering.signDoc, idx, 'tendering')} />
+                            <CheckboxItem isEditing={isEditing} label="上網公告稿" checked={round.tendering.draftAnnounce} onChange={() => handleFieldChange('rounds', 'draftAnnounce', !round.tendering.draftAnnounce, idx, 'tendering')} />
+                            <CheckboxItem isEditing={isEditing} label="招標文件" checked={round.tendering.tenderDoc} onChange={() => handleFieldChange('rounds', 'tenderDoc', !round.tendering.tenderDoc, idx, 'tendering')} />
+                          </div>
+                        ) : (
+                          <div className="grid grid-cols-1 gap-6">
+                            <div className="bg-blue-50/50 p-5 rounded-2xl border border-blue-100 flex flex-col sm:flex-row gap-4 sm:items-center">
+                               <div className="w-full sm:w-1/3">
+                                 <CheckboxItem isEditing={isEditing} label="上網公告稿" checked={round.tendering.draftAnnounce} onChange={() => handleFieldChange('rounds', 'draftAnnounce', !round.tendering.draftAnnounce, idx, 'tendering')} />
+                               </div>
+                            </div>
+                          </div>
+                        )}
                       </SoftCard>
                     ))}
                     {isEditing && (
@@ -609,7 +719,15 @@ export default function App() {
                       <SoftCard key={idx}>
                         <div className="flex flex-col lg:flex-row justify-between items-start lg:items-center mb-8 gap-4 border-b border-slate-100 pb-6">
                            <div className="space-y-4 w-full lg:w-auto">
-                              <h3 className="text-lg font-black text-slate-800">第 {round.id} 次開標</h3>
+                              <div className="flex items-center gap-3">
+                                <h3 className="text-lg font-black text-slate-800">第 {round.id} 次開標</h3>
+                                {/* 新增：開標回合刪除選項 (第2次含以後) */}
+                                {isEditing && idx > 0 && (
+                                  <button onClick={() => removeRound(idx)} className="text-rose-500 hover:text-rose-600 bg-rose-50 hover:bg-rose-100 px-3 py-1.5 rounded-lg text-sm font-bold flex items-center gap-1 transition-all">
+                                    <Trash2 className="w-4 h-4" /> 刪除
+                                  </button>
+                                )}
+                              </div>
                               <CustomDateTimePicker isEditing={isEditing} label="開標時間" value={round.waiting.date} onChange={(v) => handleFieldChange('rounds', 'date', v, idx, 'waiting')} />
                            </div>
                            <div className="px-5 py-3 bg-slate-50 border border-slate-200 rounded-2xl flex flex-wrap items-center gap-4 w-full lg:w-auto">
@@ -692,7 +810,13 @@ export default function App() {
                           </div>
                           <div className="space-y-4">
                             {(localProject.performance.inProgress?.reviewRounds || []).map((round, index) => (
-                              <div key={round.id} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 items-end bg-slate-50 p-6 rounded-2xl border border-slate-100">
+                              <div key={round.id} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 items-end bg-slate-50 p-6 rounded-2xl border border-slate-100 relative pr-12 lg:pr-6">
+                                {/* 新增：送審回合刪除選項 (第2次含以後) */}
+                                {isEditing && index > 0 && (
+                                  <button onClick={() => removeReviewRound(index)} className="absolute top-4 right-4 text-rose-400 hover:text-rose-600 bg-white hover:bg-rose-50 p-2 rounded-lg border border-slate-200 transition-all shadow-sm" title="刪除此送審">
+                                    <Trash2 className="w-4 h-4" />
+                                  </button>
+                                )}
                                 <InputField className="w-full" isEditing={isEditing} label={`第 ${round.id} 次送審日期`} type="date" value={round.submitDate} onChange={(v) => handleReviewChange(index, 'submitDate', v)} />
                                 <div className="flex flex-col space-y-2 justify-center pb-2 w-full">
                                    <label className="text-xs font-bold text-slate-500 ml-1 tracking-wide">審查結果</label>
